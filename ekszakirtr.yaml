@@ -1,0 +1,228 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: eks-pvc-ws
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: tekton.dev/v1beta1
+kind: TaskRun
+metadata:
+  generateName: eks-cluster
+spec:
+  workspaces:
+    - name: ekscluster
+      persistentVolumeClaim:
+        claimName: eks-pvc-ws
+  taskSpec:
+    steps:
+    - name: pullcode
+      image: alpine/git #'gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.15.2'
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - "ALL"
+        # User 65532 is the nonroot user ID
+        # runAsNonRoot: true
+      env:
+      - name: CHECKOUT_DIR
+        value: "provision-aws-eks"
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        cd $(workspaces.ekscluster.path)
+        if [ -d "${CHECKOUT_DIR}" ] ; then
+            # Delete non-hidden files and directories
+            rm -rf "${CHECKOUT_DIR:?}"/*
+            # Delete files and directories starting with . but excluding ..
+            rm -rf "${CHECKOUT_DIR}"/.[!.]*
+            # Delete files and directories starting with .. plus any other character
+            rm -rf "${CHECKOUT_DIR}"/..?*
+        fi
+        ls
+        git clone https://github.com/mohdzakir12/provision-aws-eks.git
+    
+    - name: eks-code-initiazation
+      image:  docker.io/hashicorp/terraform:1.1.9
+      workingDir:  $(workspaces.ekscluster.path)/provision-aws-eks
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        
+        set -xe
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+
+        terraform init -backend-config="bucket=mybackend-tfstate" -backend-config="key=app7.state" -backend-config="region=us-east-1"
+
+    - name: eks-code-plan
+      image:  docker.io/hashicorp/terraform:1.1.9
+      workingDir:  $(workspaces.ekscluster.path)/provision-aws-eks
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        
+        set -xe
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+
+        terraform plan -var cluster_name="nextcluster" -var cluster_version="1.24"    
+        
+    - name: eks-code-apply
+      # image:  docker.io/hashicorp/terraform:1.1.9
+      image: zenika/terraform-aws-cli
+      workingDir:  $(workspaces.ekscluster.path)/provision-aws-eks
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        
+        set -xe
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+
+        terraform apply --auto-approve -var cluster_name="nextcluster" -var cluster_version="1.24"
+
+    - name: pullcode-aws-auth
+      image: alpine/git #'gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.15.2'
+      env:
+      - name: CHECKOUT_DIR
+        value: "aws-eks-authconfiguration"
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        cd $(workspaces.ekscluster.path)
+        if [ -d "${CHECKOUT_DIR}" ] ; then
+            # Delete non-hidden files and directories
+            rm -rf "${CHECKOUT_DIR:?}"/*
+            # Delete files and directories starting with . but excluding ..
+            rm -rf "${CHECKOUT_DIR}"/.[!.]*
+            # Delete files and directories starting with .. plus any other character
+            rm -rf "${CHECKOUT_DIR}"/..?*
+        fi
+        ls
+        git clone https://github.com/shahbazalam8/aws-eks-authconfiguration.git
+    
+    - name: eks-auth-init
+      image:  docker.io/hashicorp/terraform:1.1.9
+      # image: zenika/terraform-aws-cli
+      workingDir:  $(workspaces.ekscluster.path)/aws-eks-authconfiguration
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        set -xe
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+        terraform init -backend-config="bucket=mybackend-tfstate" -backend-config="key=authconfig.state" -backend-config="region=us-east-1"
+
+    - name: eks-auth-plan
+      image:  docker.io/hashicorp/terraform:1.1.9
+      # image: zenika/terraform-aws-cli
+      workingDir:  $(workspaces.ekscluster.path)/aws-eks-authconfiguration
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        set -xe
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+        ls
+        terraform plan
+
+    - name: eks-auth-apply
+      image:  docker.io/hashicorp/terraform:1.1.9
+      # image: zenika/terraform-aws-cli
+      workingDir:  $(workspaces.ekscluster.path)/aws-eks-authconfiguration
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        set -xe
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+        ls
+        # terraform apply --auto-approve
+
+    - name: eks-auth-destroy
+      image:  docker.io/hashicorp/terraform:1.1.9
+      # image: zenika/terraform-aws-cli
+      workingDir:  $(workspaces.ekscluster.path)/aws-eks-authconfiguration
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        set -xe
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+        ls
+        # terraform destroy --auto-approve
+
+    - name: pullcode-eks-ebs
+      image: alpine/git #'gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.15.2'
+      env:
+      - name: CHECKOUT_DIR
+        value: "eks-ebs-csi-driver-automation"
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        cd $(workspaces.ekscluster.path)
+        if [ -d "${CHECKOUT_DIR}" ] ; then
+            # Delete non-hidden files and directories
+            rm -rf "${CHECKOUT_DIR:?}"/*
+            # Delete files and directories starting with . but excluding ..
+            rm -rf "${CHECKOUT_DIR}"/.[!.]*
+            # Delete files and directories starting with .. plus any other character
+            rm -rf "${CHECKOUT_DIR}"/..?*
+        fi
+        ls
+        git clone https://github.com/synectiks-sddc/eks-ebs-csi-driver-automation.git
+    
+    - name: eks-eks-ebs-apply
+      #image:  docker.io/hashicorp/terraform:1.1.9
+      image: ubuntu
+      workingDir:  $(workspaces.ekscluster.path)/eks-ebs-csi-driver-automation
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        set -xe
+        apt-get update
+        apt-get install wget -y 
+        apt-get install unzip -y
+        apt-get install sudo -y
+        apt-get install curl -y
+        wget https://releases.hashicorp.com/terraform/1.1.9/terraform_1.1.9_linux_amd64.zip
+        unzip terraform_1.1.9_linux_amd64.zip
+        sudo mv terraform /usr/local/bin/ 
+        #curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+        curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.23.0/bin/linux/amd64/kubectl
+        ls
+        chmod +x ./kubectl
+        sudo mv ./kubectl /usr/local/bin/kubectl
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        unzip awscliv2.zip
+        sudo ./aws/install
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+        kubectl version
+        aws eks update-kubeconfig --name nextcluster --region "us-east-1"
+        ls
+        terraform version
+        terraform init
+        # terraform plan
+        # terraform apply --auto-approve
+
+    - name: eks-code-destroy
+      image:  docker.io/hashicorp/terraform:light
+      workingDir:  $(workspaces.ekscluster.path)/provision-aws-eks
+      script:  |
+        #!/usr/bin/env sh
+        set -eu
+        
+        set -xe
+        export "AWS_ACCESS_KEY_ID=key" #`cat $(workspaces.custom5.path)/aws_access_key_id`"
+        export "AWS_SECRET_ACCESS_KEY=secret" #`cat $(workspaces.custom5.path)/aws_secret_access_key`"
+
+        terraform destroy --auto-approve -var cluster_name="nextcluster" -var cluster_version="1.24"
+    workspaces:
+    - name: ekscluster
